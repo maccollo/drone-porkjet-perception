@@ -92,7 +92,7 @@ class Detector(nn.Module):
             for bb_index in bb_indices:
                 bb_coeffs = o[0:4, bb_index[0], bb_index[1]]
 
-                categories = o[5:19, bb_index[0], bb_index[1]]
+                categories = o[5:20, bb_index[0], bb_index[1]]
                 #print(categories)
                 categories = categories.numpy()
 

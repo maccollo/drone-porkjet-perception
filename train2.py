@@ -6,6 +6,8 @@ from datetime import datetime
 import os
 import copy
 
+from matplotlib import streamplot
+
 from pycocotools.cocoeval import COCOeval
 import torch
 from torch import nn
@@ -18,13 +20,13 @@ import utils
 from detector import Detector
 
 NUM_CATEGORIES = 15
-VALIDATION_ITERATION = 100
+VALIDATION_ITERATION = 500
 MAX_ITERATIONS = 10000
 LEARNING_RATE = 1e-4
 WEIGHT_POS = 1
 WEIGHT_NEG = 1
 WEIGHT_REG = 1
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 
 
 def compute_loss(prediction_batch, target_batch):
@@ -46,9 +48,13 @@ def compute_loss(prediction_batch, target_batch):
     neg_indices = torch.nonzero(target_batch[:, 4, :, :] == 0, as_tuple=True)
 
     # compute loss
-    sign_mse = nn.functional.mse_loss(
-        out[pos_indices[0], 5:, pos_indices[1], pos_indices[2]],
+    sign_mse_pos = nn.functional.mse_loss(
+        prediction_batch[pos_indices[0], 5:, pos_indices[1], pos_indices[2]],
         target_batch[pos_indices[0], 5:, pos_indices[1], pos_indices[2]],
+    )
+    sign_mse_neg = nn.functional.mse_loss(
+        prediction_batch[neg_indices[0], 5:, neg_indices[1], neg_indices[2]],
+        target_batch[neg_indices[0], 5:, neg_indices[1], neg_indices[2]],
     )
 #    sign_mse_neg = nn.functional.mse_loss(
 #        out[neg_indices[0], 5:, neg_indices[1], neg_indices[2]],
@@ -68,7 +74,7 @@ def compute_loss(prediction_batch, target_batch):
         prediction_batch[neg_indices[0], 4, neg_indices[1], neg_indices[2]],
         target_batch[neg_indices[0], 4, neg_indices[1], neg_indices[2]],
     )
-    return reg_mse, pos_mse, neg_mse, sign_mse
+    return reg_mse, pos_mse, neg_mse, sign_mse_pos
 
 
 def train(device="cpu"):
@@ -212,6 +218,7 @@ def train(device="cpu"):
     print("Training started...")
 
     current_iteration = 1
+    current_validation = 1
     while current_iteration <= MAX_ITERATIONS:
         for img_batch, target_batch in dataloader:
             img_batch = img_batch.to(device)
@@ -220,8 +227,8 @@ def train(device="cpu"):
             # run network
             out = detector(img_batch)
 
-            reg_mse, pos_mse, neg_mse, sign_mse = compute_loss(out, target_batch)
-            loss = WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse + sign_mse
+            reg_mse, pos_mse, neg_mse, pos_sign_mse, neg_sign_mse = compute_loss(out, target_batch)
+            loss = WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse + pos_sign_mse
             # optimize
             optimizer.zero_grad()
             loss.backward()
@@ -243,7 +250,10 @@ def train(device="cpu"):
 
             # Validate every N iterations
             if current_iteration % VALIDATION_ITERATION == 0:
+                model_path =  "{}.pt".format(run_name + "_" + str(current_iteration))
+                utils.save_model(detector, model_path)
                 validate(detector, val_dataloader, current_iteration, device)
+
 
             # generate visualization every N iterations
             if current_iteration % 250 == 0 and show_test_images:
@@ -276,7 +286,7 @@ def train(device="cpu"):
 
     print("\nTraining completed (max iterations reached)")
 
-    model_path = "{}.pt".format(run_name)
+    model_path =   "{}.pt".format(run_name + "_" + str(current_iteration))
     utils.save_model(detector, model_path)
     wandb.save(model_path)
 
@@ -294,15 +304,13 @@ def validate(detector, val_dataloader, current_iteration, device):
             val_img_batch = val_img_batch.to(device)
             val_target_batch = val_target_batch.to(device)
             val_out = detector(val_img_batch)
-            reg_mse, pos_mse, neg_mse, sign_mse, sign_mse_neg = compute_loss(val_out, val_target_batch)
+            reg_mse, pos_mse, neg_mse, pos_sign_mse = compute_loss(val_out, val_target_batch)
             total_reg_mse += reg_mse
             total_pos_mse += pos_mse
             total_neg_mse += neg_mse
 
-            total_sign_mse += sign_mse
 
-
-            loss += WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse + sign_mse
+            loss += WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse + pos_sign_mse
             imgs_bbs = detector.decode_output(val_out, topk=100)
             for img_bbs in imgs_bbs:
                 for img_bb in img_bbs:
