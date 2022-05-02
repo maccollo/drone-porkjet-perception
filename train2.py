@@ -46,9 +46,19 @@ def compute_loss(prediction_batch, target_batch):
     neg_indices = torch.nonzero(target_batch[:, 4, :, :] == 0, as_tuple=True)
 
     # compute loss
+    sign_mse = nn.functional.mse_loss(
+        out[pos_indices[0], 5:, pos_indices[1], pos_indices[2]],
+        target_batch[pos_indices[0], 5:, pos_indices[1], pos_indices[2]],
+    )
+#    sign_mse_neg = nn.functional.mse_loss(
+#        out[neg_indices[0], 5:, neg_indices[1], neg_indices[2]],
+#        target_batch[neg_indices[0], 5:, neg_indices[1], neg_indices[2]],
+#    )
+
+
     reg_mse = nn.functional.mse_loss(
-        prediction_batch[pos_indices[0], 0:19, pos_indices[1], pos_indices[2]],
-        target_batch[pos_indices[0], 0:19, pos_indices[1], pos_indices[2]],
+        prediction_batch[pos_indices[0], 0:4, pos_indices[1], pos_indices[2]],
+        target_batch[pos_indices[0], 0:4, pos_indices[1], pos_indices[2]],
     )
     pos_mse = nn.functional.mse_loss(
         prediction_batch[pos_indices[0], 4, pos_indices[1], pos_indices[2]],
@@ -58,7 +68,7 @@ def compute_loss(prediction_batch, target_batch):
         prediction_batch[neg_indices[0], 4, neg_indices[1], neg_indices[2]],
         target_batch[neg_indices[0], 4, neg_indices[1], neg_indices[2]],
     )
-    return reg_mse, pos_mse, neg_mse
+    return reg_mse, pos_mse, neg_mse, sign_mse
 
 
 def train(device="cpu"):
@@ -210,9 +220,8 @@ def train(device="cpu"):
             # run network
             out = detector(img_batch)
 
-            reg_mse, pos_mse, neg_mse = compute_loss(out, target_batch)
-            loss = WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse
-
+            reg_mse, pos_mse, neg_mse, sign_mse = compute_loss(out, target_batch)
+            loss = WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse + sign_mse
             # optimize
             optimizer.zero_grad()
             loss.backward()
@@ -285,11 +294,15 @@ def validate(detector, val_dataloader, current_iteration, device):
             val_img_batch = val_img_batch.to(device)
             val_target_batch = val_target_batch.to(device)
             val_out = detector(val_img_batch)
-            reg_mse, pos_mse, neg_mse = compute_loss(val_out, val_target_batch)
+            reg_mse, pos_mse, neg_mse, sign_mse, sign_mse_neg = compute_loss(val_out, val_target_batch)
             total_reg_mse += reg_mse
             total_pos_mse += pos_mse
             total_neg_mse += neg_mse
-            loss += WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse
+
+            total_sign_mse += sign_mse
+
+
+            loss += WEIGHT_POS * pos_mse + WEIGHT_REG * reg_mse + WEIGHT_NEG * neg_mse + sign_mse
             imgs_bbs = detector.decode_output(val_out, topk=100)
             for img_bbs in imgs_bbs:
                 for img_bb in img_bbs:
